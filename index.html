@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <!-- スマホで見やすいように -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>しりとりゲーム (1文字単位の解放)</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 10px;
+    }
+    #gameRules {
+      margin-bottom: 1em;
+      padding: 0.5em;
+      border: 1px solid #aaa;
+      background-color: #f9f9f9;
+      max-width: 600px;
+    }
+    table {
+      border-collapse: collapse;
+      margin-bottom: 1em;
+    }
+    td {
+      border: 1px solid #ccc;
+      width: 3em;
+      height: 3em;
+      text-align: center;
+      vertical-align: middle;
+      padding: 0;
+      margin: 0;
+    }
+    button {
+      width: 100%;
+      height: 100%;
+      border: none;
+      background: #f8f8f8;
+      font-size: 1em;
+      cursor: pointer;
+    }
+    button:hover:not(:disabled) {
+      background: #ddd;
+    }
+    .empty {
+      background: #eee;
+      cursor: default;
+    }
+    .highlight {
+      background: #ffeb3b; /* ターン内で解放中の文字をわかりやすく */
+    }
+    .scores, .actions {
+      margin: 1em 0;
+    }
+    #unlockedLettersContainer {
+      margin: 0.5em 0;
+      padding: 0.5em;
+      border: 1px solid #ccc;
+      min-height: 2em;
+      max-width: 300px;
+      overflow-x: auto; /* 横スクロール */
+      white-space: nowrap; /* 横に並べる */
+    }
+    .unlocked-letter-btn {
+      display: inline-block;
+      padding: 0.3em 0.6em;
+      margin: 2px;
+      border: 1px solid #aaa;
+      cursor: pointer;
+      background: #fafafa;
+    }
+    .unlocked-letter-btn:hover {
+      background: #eee;
+    }
+    #currentWordDisplay {
+      margin-top: 0.5em;
+      margin-bottom: 0.5em;
+      border: 1px solid #aaa;
+      min-height: 1.5em;
+      padding: 0.2em;
+      width: 100%;
+      max-width: 300px;
+      font-size: 1.2em;
+      white-space: pre-wrap;
+    }
+    .history span {
+      display: inline-block;
+      margin-right: 6px;
+    }
+  </style>
+</head>
+<body>
+
+<h1>しりとりゲーム</h1>
+<div id="gameRules">
+  <p>■ ルール</p>
+  <ul>
+    <li>2人で交互にしりとりをします。</li>
+    <li><strong>1ターンに1文字だけ</strong>解放できます。同じセルを再クリックで取り消し可能。</li>
+    <li>解放済みの文字は画面下部に横並びで表示され、クリックで単語を組み立てられます。</li>
+    <li>しりとりは「前の単語の最後の文字」と同じ清音グループ(濁点OK)で始まればOK。</li>
+    <li>末尾が「ん」だと即負け。単語の文字数＝得点。</li>
+    <li>「勝利必要点数」に先に達したら勝ち。</li>
+    <li>「解放文字確定」後はそのターンの解放を変更できません。</li>
+    <li>「一手戻す(Undo)」で直前の操作を取り消せます(1回のみ)。</li>
+  </ul>
+</div>
+
+<!-- 五十音表 (各セル1文字) -->
+<table id="letterTable"></table>
+
+<div class="scores">
+  <label for="targetScoreInput">勝利必要点数：</label>
+  <input type="number" id="targetScoreInput" value="30" min="1" style="width:4em;">
+
+  <p>Player1: <span id="score1">0</span>点</p>
+  <p>Player2: <span id="score2">0</span>点</p>
+  <p>現在のターン: <span id="currentPlayer">Player1</span></p>
+</div>
+
+<div class="actions">
+  <button id="confirmUnlockBtn">解放文字確定</button>
+  
+  <p>解放済みの文字:</p>
+  <div id="unlockedLettersContainer">(まだありません)</div>
+
+  <p>単語を作成:</p>
+  <div id="currentWordDisplay"></div>
+  <button id="deleteCharBtn">1文字削除</button>
+  <button id="confirmWordBtn">単語確定</button>
+
+  <br><br>
+  <button id="undoBtn">一手戻す (Undo)</button>
+</div>
+
+<div class="history">
+  <h3>しりとり履歴</h3>
+  <div id="historyList"></div>
+</div>
+
+<script>
+// -----------------------------------------
+// 1. 五十音を「1文字ずつ」テーブルに配置
+//    (10～11行 x 5列で46文字 + 'ん')
+// -----------------------------------------
+const tableLayout = [
+  ["あ","い","う","え","お"],
+  ["か","き","く","け","こ"],
+  ["さ","し","す","せ","そ"],
+  ["た","ち","つ","て","と"],
+  ["な","に","ぬ","ね","の"],
+  ["は","ひ","ふ","へ","ほ"],
+  ["ま","み","む","め","も"],
+  ["や","","ゆ","","よ"],
+  ["ら","り","る","れ","ろ"],
+  ["わ","","","", "を"],
+  ["ん","","","",""]
+];
+
+// 清音と濁点・半濁音の対応
+const variationMap = {
+  "あ":["あ"], "い":["い"], "う":["う"], "え":["え"], "お":["お"],
+  "か":["か","が"], "き":["き","ぎ"], "く":["く","ぐ"], "け":["け","げ"], "こ":["こ","ご"],
+  "さ":["さ","ざ"], "し":["し","じ"], "す":["す","ず"], "せ":["せ","ぜ"], "そ":["そ","ぞ"],
+  "た":["た","だ"], "ち":["ち","ぢ"], "つ":["つ","づ"], "て":["て","で"], "と":["と","ど"],
+  "な":["な"], "に":["に"], "ぬ":["ぬ"], "ね":["ね"], "の":["の"],
+  "は":["は","ば","ぱ"], "ひ":["ひ","び","ぴ"], "ふ":["ふ","ぶ","ぷ"], "へ":["へ","べ","ぺ"], "ほ":["ほ","ぼ","ぽ"],
+  "ま":["ま"], "み":["み"], "む":["む"], "め":["め"], "も":["も"],
+  "や":["や"], "ゆ":["ゆ"], "よ":["よ"],
+  "ら":["ら"], "り":["り"], "る":["る"], "れ":["れ"], "ろ":["ろ"],
+  "わ":["わ"], "を":["を"],
+  "ん":["ん"]
+};
+
+// -----------------------------------------
+// 2. ゲーム管理用の変数
+// -----------------------------------------
+let currentPlayer = 1;
+let score1 = 0;
+let score2 = 0;
+let lastChar = null; // 前の単語の最後の文字
+let gameOver = false;
+
+let targetScore = 30; // ユーザー入力で変わる
+
+// 1ターンに1文字だけ。もし同じセルを再クリックでON/OFF可能。
+// 「解放文字確定」したら変更不可
+let thisTurnLetter = null;   // 今ターンでクリックした文字 (例: "か")
+let unlockFinalized = false; // 確定したかどうか
+
+// 実際に「解放」されている文字全体(清音+濁点等を含む)
+let unlockedSet = new Set();
+
+// 単語作成用(画面に表示する)
+let buildingWord = "";
+
+// Undo用(直前のアクション1回分)
+let lastAction = null;
+
+// -----------------------------------------
+// 3. テーブル生成: 1文字1セル
+// -----------------------------------------
+const letterTable = document.getElementById("letterTable");
+
+function createLetterTable() {
+  for (let r = 0; r < tableLayout.length; r++) {
+    const tr = document.createElement("tr");
+    for (let c = 0; c < tableLayout[r].length; c++) {
+      const letter = tableLayout[r][c];
+      const td = document.createElement("td");
+      if (!letter) {
+        td.classList.add("empty");
+        td.innerHTML = "&nbsp;";
+      } else {
+        const btn = document.createElement("button");
+        btn.textContent = letter;
+        btn.addEventListener("click", () => handleLetterClick(letter, r, c));
+        td.appendChild(btn);
+      }
+      tr.appendChild(td);
+    }
+    letterTable.appendChild(tr);
+  }
+}
+createLetterTable();
+
+/**
+ * セルをクリックしたとき:
+ *  - 1ターンに1文字だけ。今ターンで未確定ならON/OFFできる。
+ *  - 前のターンで解放したものは関係ない(解除不可)。
+ */
+function handleLetterClick(letter, row, col) {
+  if (gameOver) return;
+  if (unlockFinalized) {
+    // 既に「解放文字確定」している場合は変更不可
+    return;
+  }
+
+  // ベース文字(清音)を求める(例: "か"をクリック => base="か")
+  // ただし "が"セルなどがない以上、このまま"か"= "か"でOK
+  // (今回テーブルに濁点セルはないのでシンプル)
+  const base = letter;  
+  const group = variationMap[base]; // 例: "か" -> ["か","が"]
+
+  // もし既に前のターンまでに解放された文字(=unlockedSetに含まれる)でも、
+  // 「このターンで押した文字」でなければ 解除はできない(=何もしない)
+  const alreadyGlobalUnlocked = group.some(ch => unlockedSet.has(ch));
+  if (alreadyGlobalUnlocked && thisTurnLetter !== base) {
+    // すでに前のターンで解放済みの文字は再クリックでOFFにできない
+    return;
+  }
+
+  // 同じ文字を再度クリック -> OFFにする(取消)
+  if (thisTurnLetter === base) {
+    // OFFにする
+    group.forEach(ch => unlockedSet.delete(ch));
+    unhighlightCell(row, col);
+    thisTurnLetter = null;
+    // Undo登録
+    lastAction = {
+      type: "unlockToggleOff",
+      letter: base,
+      group,
+      row, col
+    };
+    updateUnlockedLettersUI();
+    return;
+  }
+
+  // まだこのターンで何も選んでいない場合
+  if (!thisTurnLetter) {
+    // ONにする
+    group.forEach(ch => unlockedSet.add(ch));
+    highlightCell(row, col);
+    thisTurnLetter = base;
+    // Undo登録
+    lastAction = {
+      type: "unlockOn",
+      letter: base,
+      group,
+      row, col
+    };
+    updateUnlockedLettersUI();
+    return;
+  }
+
+  // このターンですでに別の文字を選んでいる -> 何もしない(1ターン1文字)
+}
+
+/** セルをハイライトする/解除する */
+function highlightCell(row, col) {
+  const tr = letterTable.rows[row];
+  if (!tr) return;
+  const td = tr.cells[col];
+  if (!td) return;
+  const btn = td.querySelector("button");
+  if (btn) {
+    btn.classList.add("highlight");
+  }
+}
+function unhighlightCell(row, col) {
+  const tr = letterTable.rows[row];
+  if (!tr) return;
+  const td = tr.cells[col];
+  if (!td) return;
+  const btn = td.querySelector("button");
+  if (btn) {
+    btn.classList.remove("highlight");
+  }
+}
+
+// -----------------------------------------
+// 4. 「解放文字確定」ボタン
+// -----------------------------------------
+const confirmUnlockBtn = document.getElementById("confirmUnlockBtn");
+confirmUnlockBtn.addEventListener("click", () => {
+  if (gameOver) return;
+  if (!thisTurnLetter) {
+    // 何も選んでいないときは確定できない
+    return;
+  }
+  unlockFinalized = true;
+  // Undo登録
+  lastAction = {
+    type: "unlockFinalize",
+    letter: thisTurnLetter
+  };
+});
+
+// -----------------------------------------
+// 5. 解放済み文字を画面下に横並びで表示
+//    クリックで単語に追加
+// -----------------------------------------
+const unlockedLettersContainer = document.getElementById("unlockedLettersContainer");
+
+function updateUnlockedLettersUI() {
+  unlockedLettersContainer.innerHTML = "";
+  const arr = Array.from(unlockedSet).sort(); // ひらがな順に並べる(簡易)
+  if (arr.length === 0) {
+    unlockedLettersContainer.textContent = "(まだありません)";
+    return;
+  }
+  for (const ch of arr) {
+    const span = document.createElement("span");
+    span.className = "unlocked-letter-btn";
+    span.textContent = ch;
+    span.addEventListener("click", () => {
+      // buildingWordに追加
+      buildingWord += ch;
+      updateBuildingWordDisplay();
+    });
+    unlockedLettersContainer.appendChild(span);
+  }
+}
+
+// 単語作成表示
+const currentWordDisplay = document.getElementById("currentWordDisplay");
+function updateBuildingWordDisplay() {
+  currentWordDisplay.textContent = buildingWord || "(未入力)";
+}
+
+// -----------------------------------------
+// 6. 単語入力(作成) → しりとり判定
+// -----------------------------------------
+const deleteCharBtn = document.getElementById("deleteCharBtn");
+deleteCharBtn.addEventListener("click", () => {
+  if (buildingWord.length > 0) {
+    buildingWord = buildingWord.slice(0, -1);
+    updateBuildingWordDisplay();
+  }
+});
+
+const confirmWordBtn = document.getElementById("confirmWordBtn");
+confirmWordBtn.addEventListener("click", () => {
+  if (gameOver) return;
+  const word = buildingWord.trim();
+  if (!word) {
+    alert("単語が空です。");
+    return;
+  }
+  if (!/^[ぁ-ゔ]+$/.test(word)) {
+    alert("ひらがな以外の文字が含まれています。");
+    return;
+  }
+  if (lastChar !== null) {
+    if (!checkShiritoriRule(lastChar, word[0])) {
+      alert(`前の単語の最後「${lastChar}」と同じ清音で始まっていません。`);
+      return;
+    }
+  }
+  // 解放されている文字だけでできているか
+  for (const ch of word) {
+    if (!unlockedSet.has(ch)) {
+      alert(`解放されていない文字「${ch}」が含まれています。`);
+      return;
+    }
+  }
+  // 末尾「ん」 => 負け
+  const lastC = word[word.length - 1];
+  if (lastC === "ん") {
+    alert(`「ん」で終わったため、Player${currentPlayer}の負けです。`);
+    addHistory(word);
+    gameOver = true;
+    // Undo登録
+    lastAction = {
+      type: "word",
+      word,
+      points: 0,
+      oldLastChar: lastChar,
+      newLastChar: "ん",
+      player: currentPlayer,
+      element: historyList.lastChild,
+      wasGameOver: true
+    };
+    return;
+  }
+
+  // 得点を加算
+  const points = word.length;
+  if (currentPlayer === 1) {
+    score1 += points;
+    document.getElementById("score1").textContent = score1;
+  } else {
+    score2 += points;
+    document.getElementById("score2").textContent = score2;
+  }
+
+  addHistory(word);
+
+  // Undo登録
+  lastAction = {
+    type: "word",
+    word,
+    points,
+    oldLastChar: lastChar,
+    newLastChar: lastC,
+    player: currentPlayer,
+    element: historyList.lastChild,
+    wasGameOver: false
+  };
+
+  // 勝利判定
+  if (score1 >= targetScore) {
+    alert(`Player1が${targetScore}点に到達！勝利です！`);
+    gameOver = true;
+    lastAction.wasGameOver = true;
+  } else if (score2 >= targetScore) {
+    alert(`Player2が${targetScore}点に到達！勝利です！`);
+    gameOver = true;
+    lastAction.wasGameOver = true;
+  }
+
+  // しりとり用に最後の文字記録
+  lastChar = lastC;
+
+  // 単語クリア
+  buildingWord = "";
+  updateBuildingWordDisplay();
+
+  // ターン終了
+  endTurn();
+});
+
+/** 濁点OKのしりとりチェック */
+function checkShiritoriRule(lastCh, firstCh) {
+  const baseLast = getBaseLetter(lastCh);
+  const baseFirst = getBaseLetter(firstCh);
+  return baseLast === baseFirst;
+}
+function getBaseLetter(ch) {
+  // variationMapから探す
+  for (const [base, group] of Object.entries(variationMap)) {
+    if (group.includes(ch)) {
+      return base;
+    }
+  }
+  return ch; // fallback
+}
+
+/** しりとり履歴 */
+const historyList = document.getElementById("historyList");
+function addHistory(word) {
+  const span = document.createElement("span");
+  span.textContent = word;
+  historyList.appendChild(span);
+  return span;
+}
+
+/** ターン終了 */
+function endTurn() {
+  // 次のプレイヤーへ
+  currentPlayer = (currentPlayer === 1) ? 2 : 1;
+  document.getElementById("currentPlayer").textContent = `Player${currentPlayer}`;
+
+  // 今ターンの選択をリセット
+  thisTurnLetter = null;
+  unlockFinalized = false;
+}
+
+// -----------------------------------------
+// 7. Undo (一手戻す)
+// -----------------------------------------
+const undoBtn = document.getElementById("undoBtn");
+undoBtn.addEventListener("click", () => {
+  if (!lastAction) {
+    alert("戻せるアクションがありません。");
+    return;
+  }
+  if (lastAction.wasGameOver) {
+    // ゲームオーバー取り消し
+    gameOver = false;
+  }
+
+  const action = lastAction;
+  lastAction = null; // 1回だけ
+
+  switch (action.type) {
+    case "unlockOn": {
+      // 解放を取り消す
+      const { letter, group, row, col } = action;
+      group.forEach(ch => unlockedSet.delete(ch));
+      unhighlightCell(row, col);
+      if (thisTurnLetter === letter) {
+        thisTurnLetter = null;
+      }
+      break;
+    }
+    case "unlockToggleOff": {
+      // OFFを取り消す => ONに戻す
+      const { letter, group, row, col } = action;
+      group.forEach(ch => unlockedSet.add(ch));
+      highlightCell(row, col);
+      thisTurnLetter = letter;
+      break;
+    }
+    case "unlockFinalize": {
+      // 確定を取り消す
+      unlockFinalized = false;
+      break;
+    }
+    case "word": {
+      // 単語入力を取り消す
+      const { word, points, oldLastChar, newLastChar, player, element } = action;
+
+      // 履歴を消す
+      if (element && element.parentNode) {
+        element.parentNode.removeChild(element);
+      }
+      // スコア戻し
+      if (points > 0) {
+        if (player === 1) {
+          score1 -= points;
+          document.getElementById("score1").textContent = score1;
+        } else {
+          score2 -= points;
+          document.getElementById("score2").textContent = score2;
+        }
+      }
+      // 最後の文字を戻す
+      lastChar = oldLastChar;
+      // プレイヤーを戻す
+      currentPlayer = player;
+      document.getElementById("currentPlayer").textContent = `Player${currentPlayer}`;
+      // buildingWordはとりあえず空にしておく
+      buildingWord = "";
+      updateBuildingWordDisplay();
+      // ターンも巻き戻すかどうかは設計次第(ここでは簡易的にプレイヤーを戻すだけ)
+      break;
+    }
+  }
+
+  updateUnlockedLettersUI();
+});
+
+// -----------------------------------------
+// 8. 勝利必要点数(ユーザー指定)
+// -----------------------------------------
+const targetScoreInput = document.getElementById("targetScoreInput");
+targetScoreInput.addEventListener("change", () => {
+  const val = parseInt(targetScoreInput.value, 10);
+  if (!isNaN(val) && val > 0) {
+    targetScore = val;
+  }
+});
+
+// 初期表示
+updateBuildingWordDisplay();
+updateUnlockedLettersUI();
+</script>
+
+</body>
+</html>
